@@ -1,0 +1,45 @@
+module individualBomb (
+    input clk,  // clock
+    input rst,  // reset
+    input start_bomb,  // Starts the bomb
+    input x_pos_in[3],
+    input y_pos_in[3],
+
+    output x_pos_out[3],
+    output y_pos_out[3],
+    output started,
+    output bit
+  ) {
+
+  sig x[3];
+  sig y[3];
+  sig s;
+  
+  .clk(clk) {
+    .rst(rst) {
+      //bomb_countdown bombTimer(#SIZE(3), #DIV(25), #UP(0), #TOP(7));    // Counter that counts down from 7 to 0 every ~1.5s
+      dff bomb_timer[33];
+    }
+  }
+  
+  
+  always {
+    
+    x = x_pos_in;
+    x_pos_out = x;
+    y = y_pos_in;
+    y_pos_out = y;
+    s = 0;
+    bit = 0;
+    
+    if (start_bomb == 1) {
+      s = 1;
+      bomb_timer.d = bomb_timer.q + 1;
+    }
+    if (bomb_timer.q[32] == 1) {
+      bit = 1;
+    }
+    
+    started = s;
+  }
+}

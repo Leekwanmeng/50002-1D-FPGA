@@ -1,0 +1,603 @@
+module mojo_top (
+    input clk,              // 50MHz clock
+    input rst_n,            // reset button (active low)
+    output led [8],         // 8 user controllable LEDs
+    input cclk,             // configuration clock, AVR ready when high
+    output spi_miso,        // AVR SPI MISO
+    input spi_ss,           // AVR SPI Slave Select
+    input spi_mosi,         // AVR SPI MOSI
+    input spi_sck,          // AVR SPI Clock
+    output spi_channel [4], // AVR general purpose pins (used by default to select ADC channel)
+    input avr_tx,           // AVR TX (FPGA RX)
+    output avr_rx,          // AVR RX (FPGA TX)
+    input avr_rx_busy,      // AVR RX buffer full
+    
+    input middle_button,
+    input up_button,
+    input down_button,
+    input left_button,
+    input right_button,
+    
+    output r_red[8],
+    output r_blue[8],
+    output col[8]
+    
+  ) {
+  
+  sig rst;                  // reset signal
+  var i;
+  var j;
+  sig x[8];
+  sig y[8];
+  sig a[8];
+  sig random_x[3];
+  sig random_y[3];
+  sig blue_map[8][8];
+  sig red_map[8][8];
+  sig char_on_map[8][8];
+  sig bool[8];
+  sig temp_bomb_map[8][8];
+  
+  alu alu;
+  
+  
+  .clk(clk) {
+    // The reset conditioner is used to synchronize the reset signal to the FPGA
+    // clock. This ensures the entire FPGA comes out of reset at the same time.
+    reset_conditioner reset_cond;
+    
+    edge_detector edge_detector_mid (#RISE(1), #FALL(0));         // Detects rising edges
+    button_conditioner middle_button_cond;                        // Syncs and debounces button
+    edge_detector edge_detector_up (#RISE(1), #FALL(0));          // Detects rising edges
+    button_conditioner up_button_cond;                            // Syncs and debounces button
+    edge_detector edge_detector_down (#RISE(1), #FALL(0));        // Detects rising edges
+    button_conditioner down_button_cond;                          // Syncs and debounces button
+    edge_detector edge_detector_left (#RISE(1), #FALL(0));        // Detects rising edges
+    button_conditioner left_button_cond;                          // Syncs and debounces button
+    edge_detector edge_detector_right (#RISE(1), #FALL(0));       // Detects rising edges
+    button_conditioner right_button_cond;                         // Syncs and debounces button
+    
+    edge_detector clock_edge;
+    
+    .rst(rst) {
+
+      dff clock[25];                              // Background clock for add new bomb and random location
+      dff transition_clock[26];
+      dff transition_counter[3];
+      pn_gen pn_gen;
+      
+      character_map char_map;                     // Convert x and y to 8x8 map
+      dff bombs_on_map[8][8];                     // 8x8 Map for bombs, 1 if bomb, 0 if no bomb e.g.(10000001) has 2 bombs at each end of the row
+      
+      display_red display_red;                    // Takes 8x8 red map and converts to anode cathode output
+      display_blue display_blue;                  // Takes 8x8 blue map and converts to anode cathode output
+      
+      dff allbombs[15][30];
+      dff bomb_x[15][3];
+      dff bomb_y[15][3];
+      dff bomb_start[15];
+      dff bomb_count[4];                          // Keeps track of number of bombs placed
+      
+      dff current_pos_x[3](#INIT(4));             // Current player position
+      dff current_pos_y[3](#INIT(4));
+      
+      dff current_level[2](#INIT(1));             // Levels 1 to 3, starts at 1
+      
+      dff total_bombs_per_level[4](#INIT(5));     // Number of bombs per level
+      
+      fsm bombergame(#INIT(IDLE)) = {IDLE, TRANSITION, UPDATE_MAP, STAGE, WIN, LOSE};
+    }
+  }
+  
+  
+  always {
+    reset_cond.in = ~rst_n; // input raw inverted reset signal
+    rst = reset_cond.out;   // conditioned reset
+    led = 8h00;             // turn LEDs off
+    spi_miso = bz;          // not using SPI
+    spi_channel = bzzzz;    // not using flags
+    avr_rx = bz;            // not using serial port
+      
+    
+    // Middle button
+    middle_button_cond.in = middle_button;            // raw button input
+    edge_detector_mid.in = middle_button_cond.out;    // input to edge_detector
+    
+    // Directional buttons
+    up_button_cond.in = up_button;
+    edge_detector_up.in = up_button_cond.out;
+    down_button_cond.in = down_button;
+    edge_detector_down.in = down_button_cond.out;
+    left_button_cond.in = left_button;
+    edge_detector_left.in = left_button_cond.out;
+    right_button_cond.in = right_button;
+    edge_detector_right.in = right_button_cond.out;
+    
+    clock_edge.in = transition_clock.q[23];
+    
+    pn_gen.next = 1;
+    pn_gen.seed = 0;
+    
+    // Increase clock cycle
+    clock.d = clock.q + 1;
+    
+    random_x = pn_gen.num[2:0];  // Random x and y for add bomb coordinates
+    random_y = pn_gen.num[5:3];
+    
+    alu.a = 0;
+    alu.b = 0;
+    alu.alufn = 6b0;
+    
+    
+    // For all bombs, if started, count up to 36hfffffffff.
+    // If not started, reset to 0
+    for (i=0; i<15; i++) {
+      if (bomb_start.q[i] == 1 && allbombs.q[i] != 30h3fffffff) {
+        allbombs.d[i] = allbombs.q[i] + 1;
+      } 
+      else if (bomb_start.q[i] == 1 && allbombs.q[i] > 30h2fffffff) {
+        allbombs.d[i] = 30h3fffffff;
+      }
+      else {
+        allbombs.d[i] = 0;
+      }
+    }
+    
+    ////////// FSM ///////////
+    
+    
+    case (bombergame.q) {
+      
+      bombergame.IDLE:
+        bomb_count.d = 0;
+        bombs_on_map.d = 8x{{8h00}};
+        char_map.x_pos = current_pos_x.q;
+        char_map.y_pos = current_pos_y.q;
+        
+        // Resets bombs
+        for (i=0; i < 15; i++) {
+          bomb_start.d[i] = 0;
+          bomb_x.d[i] = 0;
+          bomb_y.d[i] = 0;
+          allbombs.d[i] = 0;
+        }
+        
+        case (current_level.q) {
+            1:
+              total_bombs_per_level.d = 5;
+            2:
+              total_bombs_per_level.d = 10;
+            3:
+              total_bombs_per_level.d = 15;  
+        }
+        
+        // Press middle button to start game
+        if (edge_detector_mid.out) {
+          transition_clock.d = 0;
+          transition_counter.d = 0;
+          bombergame.d = bombergame.TRANSITION;
+        }
+
+          
+      bombergame.TRANSITION:
+        transition_clock.d = transition_clock.q + 1;
+        if (transition_clock.q[25] == 1) {
+          bombergame.d = bombergame.STAGE;
+        }
+        
+        
+        
+      bombergame.UPDATE_MAP:
+        if (edge_detector_mid.out) {
+          current_level.d = 1;
+          bombergame.d = bombergame.IDLE;
+        }
+        
+        // If all bombs placed and grid empty, go to win
+        if (bomb_count.q  == total_bombs_per_level.q &&
+          bombs_on_map.q == 8x{{8h00}}) {
+            bombergame.d = bombergame.WIN;
+        }
+        
+        
+        ///////////////// ALU FUNCTION /////////////////
+        // x, y = 1 if random position is same as character's
+        alu.a = random_x;
+        alu.b = current_pos_x.q;
+        alu.alufn = 6b110011;  // CMPEQ
+        x = alu.alu_out;
+        
+        alu.a = random_y;
+        alu.b = current_pos_y.q;
+        alu.alufn = 6b110011;  // CMPEQ
+        y = alu.alu_out;
+        
+        // if time to add bomb, start off a bomb and add bomb count
+        if (clock.q == 25h1ffffff &&                            // Time to add bomb
+          bomb_count.q < total_bombs_per_level.q &&             // Prevents exceeding total number of bombs
+          (x & y) != 1 &&                                // Prevents adding bomb on character position
+          bombs_on_map.q[random_y][random_x] == 0) {            // Prevents adding bomb where there already is one
+          
+            bombs_on_map.d[random_y][random_x] = 1;    // Sets position of bomb in map
+          
+            bomb_start.d[bomb_count.q] = 1;        // starts bomb in array of bombs
+            bomb_x.d[bomb_count.q] = random_x;   // x-position of bomb
+            bomb_y.d[bomb_count.q] = random_y;   // y-position of bomb
+          
+            bomb_count.d = bomb_count.q + 1;           // adds 1 to bomb count
+        }  
+        
+        
+        ///////////////// ALU FUNCTION /////////////////
+        // If directional key pressed, update player's position if doesn't exit game boundary
+        if (current_pos_x.q < 7 && edge_detector_right.out) {
+          current_pos_x.d = current_pos_x.q + 1;
+          alu.a = current_pos_x.q;
+          alu.b = 8b00000001;
+          alu.alufn = 6b000000;  // ADD
+          current_pos_x.d = alu.alu_out[2:0];
+        }
+        else if (current_pos_x.q > 0 && edge_detector_left.out) {
+          alu.a = current_pos_x.q;
+          alu.b = 8b00000001;
+          alu.alufn = 6b000001;  // SUB
+          current_pos_x.d = alu.alu_out[2:0];
+        }
+        else if (current_pos_y.q < 7 && edge_detector_up.out) {
+          alu.a = current_pos_y.q;
+          alu.b = 8b00000001;
+          alu.alufn = 6b000000;
+          current_pos_y.d = alu.alu_out[2:0];
+        }
+        else if (current_pos_y.q > 0 && edge_detector_down.out) {
+          alu.a = current_pos_y.q;
+          alu.b = 8b00000001;
+          alu.alufn = 6b000001;
+          current_pos_y.d = alu.alu_out[2:0];
+        }
+        
+        
+        ///////////////// ALU FUNCTION /////////////////
+        // If there is bomb on where player stepped, remove bomb
+        char_on_map = 8x{{8h00}};
+        char_on_map[current_pos_y.q][current_pos_x.q] = 1;
+        for (i=0; i<8; i++) {
+          alu.a = char_on_map[i][7:0];
+          alu.b = 8b00000000;
+          alu.alufn = 6b010101;      // NOT A
+          a = alu.alu_out;
+          
+          alu.a = a;
+          alu.b = bombs_on_map.q[i][7:0];
+          alu.alufn = 6b011000;      // AND
+          bool = alu.alu_out;
+          temp_bomb_map[i] = bool;
+          bombs_on_map.d[i] = bool;
+        } 
+        
+        if (temp_bomb_map != bombs_on_map.q) {    // If a bomb has been defused
+            for (j=0; j<total_bombs_per_level.q; j++) {
+              if (bomb_x.q[j] == current_pos_x.q &&
+                  bomb_y.q[j] == current_pos_y.q &&
+                  bomb_start.q[j] == 1) {
+                    bomb_start.d[j] = 0;           // then 'off' bomb and reset bomb timer
+              }
+            }
+          }
+        
+        
+        for (i=0; i<total_bombs_per_level.q; i++) {
+          if (allbombs.q[i] == 30h3fffffff) {
+            bombergame.d = bombergame.LOSE;
+          } 
+        } 
+        
+        
+       
+
+      bombergame.STAGE:
+        // Go to next level
+        if (edge_detector_mid.out) {
+          if (current_level.q <= 3) {
+            current_level.d = current_level.q + 1;
+            bombergame.d = bombergame.UPDATE_MAP;
+          } else {
+            current_level.d = 1;
+            bombergame.d = bombergame.WIN;
+          }
+        }
+        
+        
+        
+      bombergame.WIN:
+        current_pos_x.d = 4;
+        current_pos_y.d = 4;
+        
+        if (current_level.q > 3) {
+          current_level.d = 1;
+        }
+        
+        if (edge_detector_mid.out) {
+          bombergame.d = bombergame.IDLE;
+        }
+        
+        
+          
+        
+      bombergame.LOSE:
+        current_pos_x.d = 4;
+        current_pos_y.d = 4;
+        current_level.d = 1;
+        
+        transition_clock.d = transition_clock.q + 1;
+        
+        if (edge_detector_mid.out) {
+          transition_clock.d = 0;
+          bombergame.d = bombergame.IDLE;
+        }
+        
+        
+        
+        
+    }
+    
+    
+    
+////////// Display //////////////
+    
+    char_map.x_pos = current_pos_x.q;
+    char_map.y_pos = current_pos_y.q;
+      
+    display_red.red = bombs_on_map.q;
+    display_blue.blue = char_map.map;
+    
+    
+    if (bombergame.q == bombergame.IDLE) {
+      blue_map[0][7:0] = 8b11111111;
+      blue_map[1][7:0] = 8b11111111;
+      blue_map[2][7:0] = 8b11111111;
+      blue_map[3][7:0] = 8b11111111;
+      blue_map[4][7:0] = 8b11111111;
+      blue_map[5][7:0] = 8b11111111;
+      blue_map[6][7:0] = 8b11111111;
+      blue_map[7][7:0] = 8b11111111;
+      
+      display_blue.blue = blue_map;
+      r_blue = display_blue.r_blue;
+      r_red = 8b11111111;
+      col = display_blue.c_blue;
+    } 
+    else if (bombergame.q == bombergame.STAGE) {
+      blue_map = 8x{{8h00}};
+      case (current_level.q) {
+        1:
+          blue_map[0][7:0] = 8b00000000;
+          blue_map[1][7:0] = 8b00011000;
+          blue_map[2][7:0] = 8b00011100;
+          blue_map[3][7:0] = 8b00011000;
+          blue_map[4][7:0] = 8b00011000;
+          blue_map[5][7:0] = 8b00011000;
+          blue_map[6][7:0] = 8b00011000;
+          blue_map[7][7:0] = 8b00000000;
+          
+        2:
+          blue_map[0][7:0] = 8b00000000;
+          blue_map[1][7:0] = 8b00011000;
+          blue_map[2][7:0] = 8b00100100;
+          blue_map[3][7:0] = 8b00100000;
+          blue_map[4][7:0] = 8b00010000;
+          blue_map[5][7:0] = 8b00001000;
+          blue_map[6][7:0] = 8b00111100;
+          blue_map[7][7:0] = 8b00000000;
+          
+        3:
+          blue_map[0][7:0] = 8b00000000;
+          blue_map[1][7:0] = 8b00011000;
+          blue_map[2][7:0] = 8b00100100;
+          blue_map[3][7:0] = 8b00100000;
+          blue_map[4][7:0] = 8b00111000;
+          blue_map[5][7:0] = 8b00100000;
+          blue_map[6][7:0] = 8b00100100;
+          blue_map[7][7:0] = 8b00011000;
+      }  
+      
+      display_blue.blue = blue_map;
+      r_blue = display_blue.r_blue;
+      r_red = 8b11111111;
+      col = display_blue.c_blue;
+    }
+      
+    else if (bombergame.q == bombergame.WIN) {
+      
+      blue_map[0][7:0] = 8b00000000;
+      blue_map[1][7:0] = 8b10000000;
+      blue_map[2][7:0] = 8b01000000;
+      blue_map[3][7:0] = 8b00100000;
+      blue_map[4][7:0] = 8b00010001;
+      blue_map[5][7:0] = 8b00001010;
+      blue_map[6][7:0] = 8b00000100;
+      blue_map[7][7:0] = 8b00000000;
+      
+      display_blue.blue = blue_map;
+      r_blue = display_blue.r_blue;
+      r_red = 8b11111111;
+      col = display_blue.c_blue;
+    }
+    else if (bombergame.q == bombergame.LOSE) {
+      
+      red_map[0][7:0] = 8b00000000;
+      red_map[1][7:0] = 8b00001100;
+      red_map[2][7:0] = 8b00001100;
+      red_map[3][7:0] = 8b00001100;
+      red_map[4][7:0] = 8b00001100;
+      red_map[5][7:0] = 8b00111100;
+      red_map[6][7:0] = 8b00111100;
+      red_map[7][7:0] = 8b00000000;
+      
+      if (clock_edge.out) {
+        transition_counter.d = transition_counter.q + 1;
+      }
+      
+      case (transition_counter.q) {
+      
+        0:
+          red_map[0][7:0] = 8b00000000;
+          red_map[1][7:0] = 8b00000000;
+          red_map[2][7:0] = 8b00000000;
+          red_map[3][7:0] = 8b00011000;
+          red_map[4][7:0] = 8b00011000;
+          red_map[5][7:0] = 8b00000000;
+          red_map[6][7:0] = 8b00000000;
+          red_map[7][7:0] = 8b00000000;
+        1:
+          red_map[0][7:0] = 8b00000000;
+          red_map[1][7:0] = 8b00000000;
+          red_map[2][7:0] = 8b00111100;
+          red_map[3][7:0] = 8b00111100;
+          red_map[4][7:0] = 8b00111100;
+          red_map[5][7:0] = 8b00111100;
+          red_map[6][7:0] = 8b00000000;
+          red_map[7][7:0] = 8b00000000;
+        2:
+          red_map[0][7:0] = 8b00000000;
+          red_map[1][7:0] = 8b01111110;
+          red_map[2][7:0] = 8b01111110;
+          red_map[3][7:0] = 8b01111110;
+          red_map[4][7:0] = 8b01111110;
+          red_map[5][7:0] = 8b01111110;
+          red_map[6][7:0] = 8b01111110;
+          red_map[7][7:0] = 8b00000000;
+        3:
+          red_map[0][7:0] = 8b11111111;
+          red_map[1][7:0] = 8b11111111;
+          red_map[2][7:0] = 8b11111111;
+          red_map[3][7:0] = 8b11111111;
+          red_map[4][7:0] = 8b11111111;
+          red_map[5][7:0] = 8b11111111;
+          red_map[6][7:0] = 8b11111111;
+          red_map[7][7:0] = 8b11111111;
+        4:
+          red_map[0][7:0] = 8b11111111;
+          red_map[1][7:0] = 8b11111111;
+          red_map[2][7:0] = 8b11111111;
+          red_map[3][7:0] = 8b11111111;
+          red_map[4][7:0] = 8b11111111;
+          red_map[5][7:0] = 8b11111111;
+          red_map[6][7:0] = 8b11111111;
+          red_map[7][7:0] = 8b11111111;
+        5:
+          red_map[0][7:0] = 8b00000000;
+          red_map[1][7:0] = 8b01111110;
+          red_map[2][7:0] = 8b01111110;
+          red_map[3][7:0] = 8b01111110;
+          red_map[4][7:0] = 8b01111110;
+          red_map[5][7:0] = 8b01111110;
+          red_map[6][7:0] = 8b01111110;
+          red_map[7][7:0] = 8b00000000;
+        6:
+          red_map[0][7:0] = 8b00000000;
+          red_map[1][7:0] = 8b00000000;
+          red_map[2][7:0] = 8b00111100;
+          red_map[3][7:0] = 8b00111100;
+          red_map[4][7:0] = 8b00111100;
+          red_map[5][7:0] = 8b00111100;
+          red_map[6][7:0] = 8b00000000;
+          red_map[7][7:0] = 8b00000000;
+        7:
+          red_map[0][7:0] = 8b00000000;
+          red_map[1][7:0] = 8b00000000;
+          red_map[2][7:0] = 8b00000000;
+          red_map[3][7:0] = 8b00011000;
+          red_map[4][7:0] = 8b00011000;
+          red_map[5][7:0] = 8b00000000;
+          red_map[6][7:0] = 8b00000000;
+          red_map[7][7:0] = 8b00000000;
+        
+        
+        
+      }
+      
+      display_red.red = red_map;
+      r_red = display_red.r_red;
+      r_blue = 8b11111111;
+      col = display_red.c_red;
+    }
+    else if (bombergame.q == bombergame.TRANSITION) {
+      
+      blue_map[0][7:0] = 8b11111111;
+      blue_map[1][7:0] = 8b11111111;
+      blue_map[2][7:0] = 8b11111111;
+      blue_map[3][7:0] = 8b11111111;
+      blue_map[4][7:0] = 8b11111111;
+      blue_map[5][7:0] = 8b11111111;
+      blue_map[6][7:0] = 8b11111111;
+      blue_map[7][7:0] = 8b11111111;
+      
+      if (clock_edge.out) {
+        transition_counter.d = transition_counter.q + 1;
+      }
+      case (transition_counter.q) {
+        0:
+          blue_map[0][7:0] = 8b11111111;
+          blue_map[1][7:0] = 8b11111111;
+          blue_map[2][7:0] = 8b11111111;
+          blue_map[3][7:0] = 8b11111111;
+          blue_map[4][7:0] = 8b11111111;
+          blue_map[5][7:0] = 8b11111111;
+          blue_map[6][7:0] = 8b11111111;
+          blue_map[7][7:0] = 8b11111111;
+          
+        1:
+          blue_map[0][7:0] = 8b00000000;
+          blue_map[1][7:0] = 8b01111110;
+          blue_map[2][7:0] = 8b01111110;
+          blue_map[3][7:0] = 8b01111110;
+          blue_map[4][7:0] = 8b01111110;
+          blue_map[5][7:0] = 8b01111110;
+          blue_map[6][7:0] = 8b01111110;
+          blue_map[7][7:0] = 8b00000000;
+        
+        2:
+          blue_map[0][7:0] = 8b00000000;
+          blue_map[1][7:0] = 8b00000000;
+          blue_map[2][7:0] = 8b00111100;
+          blue_map[3][7:0] = 8b00111100;
+          blue_map[4][7:0] = 8b00111100;
+          blue_map[5][7:0] = 8b00111100;
+          blue_map[6][7:0] = 8b00000000;
+          blue_map[7][7:0] = 8b00000000;
+          
+        3:
+          blue_map[0][7:0] = 8b00000000;
+          blue_map[1][7:0] = 8b00000000;
+          blue_map[2][7:0] = 8b00000000;
+          blue_map[3][7:0] = 8b00011000;
+          blue_map[4][7:0] = 8b00011000;
+          blue_map[5][7:0] = 8b00000000;
+          blue_map[6][7:0] = 8b00000000;
+          blue_map[7][7:0] = 8b00000000;
+        
+      }
+      
+      display_blue.blue = blue_map;
+      r_blue = display_blue.r_blue;
+      r_red = 8b11111111;
+      col = display_blue.c_blue;
+      
+    }
+    else {
+
+      if (clock.q[5] == 1) {
+        r_red = display_red.r_red;
+        r_blue = 8b11111111;
+        col = display_red.c_red;
+      } else {
+        r_blue = display_blue.r_blue;
+        r_red = 8b11111111;
+        col = display_blue.c_blue;
+      }
+    }
+   
+
+}
+}

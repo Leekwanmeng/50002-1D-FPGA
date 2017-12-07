@@ -1,0 +1,27 @@
+module character_map (
+    input clk,  // clock
+    input rst,  // reset
+    input x_pos[3],  // Character x-position
+    input y_pos[3],  // Character y-position
+    output map[8][8]
+  ) {
+  
+
+  var i;
+  var j;
+  
+  
+  always {
+    for (i=0; i<8; i++) {
+      for (j=0; j<8; j++) {
+        if (i == y_pos && j == x_pos) {
+          map[i][j] = 1;
+        } else {
+          map[i][j] = 0;
+        }
+      }
+    }
+    
+    
+  }
+}

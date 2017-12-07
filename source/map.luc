@@ -1,0 +1,26 @@
+module map (
+    input clk,  // clock
+    input rst,  // reset
+    input grid[8][8],  // 8x8 LED matrix
+    output anode[8],   // Common anode
+    output cathode[8]  // for red
+  ) {
+  
+  .clk(clk) {
+    .rst(rst) {
+      counter ctr(#SIZE(8), #DIV(10));  // Clock counter output is 8-bits wide, counter only increments every 2^10 clock cycles
+      dff aSignal[8];
+      dff cSignal[8];
+    }
+  }
+
+  always {
+    anode = grid[ctr.value];
+    cathode = 8h00;
+    aSignal.d = 8hFF;
+    cSignal.d = 8hFF;
+    
+    anode[7:0] = grid[0][7:0];
+    
+  }
+}

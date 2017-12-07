@@ -1,0 +1,43 @@
+module boolean (
+    // Inputs
+    input a[8],
+    input b[8],
+    input alufn[4], 
+    
+    //Output
+    output boolean[8]
+    
+  ) {
+
+  always {
+  boolean = a;                                      // else, output = a
+    
+  if (alufn[3]==1 & alufn[2]==0 & alufn[1]==0 & alufn[0]==0 )  // AND
+    boolean = a & b;
+      
+  if (alufn[3]==1 & alufn[2]==1 & alufn[1]==1 & alufn[0]==0 ) // OR  
+    boolean = a | b;
+       
+  if (alufn[3]==0 & alufn[2]==1 & alufn[1]==1 & alufn[0]==0 ) // XOR 
+    boolean = a ^ b;
+      
+  if (alufn[3]==0 & alufn[2]==1 & alufn[1]==1 & alufn[0]==1 ) // NAND
+    boolean = ~(a & b);
+      
+  if (alufn[3]==0 & alufn[2]==0 & alufn[1]==0 & alufn[0]==1 ) // NOR
+    boolean = ~(a | b);
+        
+  if (alufn[3]==1 & alufn[2]==0 & alufn[1]==0 & alufn[0]==1 ) // XNOR
+     boolean = ~(a ^ b);
+      
+  if (alufn[3]==1 & alufn[2]==0 & alufn[1]==1 & alufn[0]==0 ) // A
+    boolean = a;
+  
+  if (alufn[3]==0 & alufn[2]==1 & alufn[1]==0 & alufn[0]==1 ) // A inverted          
+    boolean = ~a;                               
+                    
+  if (alufn[3]==0 & alufn[2]==0 & alufn[1]==1 & alufn[0]==1 ) // B inverted
+    boolean = ~b;                  
+      
+  }
+}

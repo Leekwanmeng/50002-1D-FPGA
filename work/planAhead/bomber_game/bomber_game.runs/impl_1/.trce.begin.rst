@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<ProcessHandle Version="1" Minor="0">
+    <Process Command="trce" Owner="KM" Host="DESKTOP-KHT4H46" Pid="18948">
+    </Process>
+</ProcessHandle>

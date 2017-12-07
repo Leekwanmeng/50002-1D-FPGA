@@ -1,0 +1,24 @@
+module display_red (
+    input clk,  // clock
+    input rst,  // reset
+    input red[8][8],
+    output r_red[8],
+    output c_red[8]
+  ) {
+  const FLIP = 16;
+  counter counter_r (.clk(clk),.rst(rst),#SIZE(3), #DIV(FLIP), #TOP(7));
+  sig whichrow[5];
+  var i;
+
+  always {
+    r_red = b11111111;
+    c_red = b11111111;
+    
+    whichrow = counter_r.value;
+    r_red[whichrow] = 0;
+    for (i = 0; i <8; i++) {
+      c_red[i] = red[whichrow][i];
+    }
+    
+  }
+}
